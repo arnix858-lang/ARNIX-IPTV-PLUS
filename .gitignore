@@ -1,0 +1,7 @@
+/decoded/
+/dist/
+/*.jks
+/*.keystore
+*.pem
+*.pk8
+app/original.apk
