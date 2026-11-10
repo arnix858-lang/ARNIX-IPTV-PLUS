@@ -182,7 +182,7 @@ def scan_channel(item):
     page_url, name = item
     page_html, final_url, _ = get_text(page_url)
     if page_html is None:
-        return name, None, []
+        return name, None, [], []
     candidates, resources = inspect_player_resources(page_html, final_url)
     candidates, resources, script_hits = inspect_player_resources(page_html, final_url)
     return name, candidates, resources, script_hits
