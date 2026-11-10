@@ -1,7 +1,9 @@
-/decoded/
-/dist/
-/*.jks
-/*.keystore
-*.pem
-*.pk8
-app/original.apk
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+playlist.m3u
+playlist.m3u.tmp
+channels.json
+channels.json.tmp
+debug.html
