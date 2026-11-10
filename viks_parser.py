@@ -113,11 +113,11 @@ def inspect_player_resources(page_html, page_url):
         # Keep short, useful context around player/network configuration tokens.
         if kind in ("script", "inline-script", "iframe", "embedded"):
             for match in re.finditer(
-                r"(?i)(m3u8|mpd|hls|dash|manifest|playlist|stream|source|file|player|ajax|fetch\\s*\\(|XMLHttpRequest|videojs|jwplayer)",
+                r"(?i)(m3u8|mpd|hls|dash|manifest|playlist|stream|source|file|player|ajax|fetch\s*\(|XMLHttpRequest|videojs|jwplayer)",
                 normalized
             ):
                 left, right = max(0, match.start()-180), min(len(normalized), match.end()+260)
-                excerpt = re.sub(r"\\s+", " ", normalized[left:right])[:460]
+                excerpt = re.sub(r"\s+", " ", normalized[left:right])[:460]
                 if excerpt and excerpt not in script_hits:
                     script_hits.append(excerpt)
                 if len(script_hits) >= 80:
