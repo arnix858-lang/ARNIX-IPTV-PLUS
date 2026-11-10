@@ -100,6 +100,7 @@ def inspect_player_resources(page_html, page_url):
     inspected = []
     seen = set()
     script_hits = []
+    player_endpoints = set()
     max_depth = 2
     max_total = MAX_SCRIPTS + MAX_IFRAMES + 8
 
@@ -109,6 +110,11 @@ def inspect_player_resources(page_html, page_url):
                               "ok": False, "content_type": content_type})
             return
         normalized = normalize_embedded_text(body)
+        for endpoint in ABS_URL_RE.findall(normalized):
+            endpoint = endpoint.rstrip("),;]}")
+            host = (urlparse(endpoint).hostname or "").lower()
+            if host in {"srv224.com", "www.srv224.com", "plrjs.org", "www.plrjs.org"}:
+                player_endpoints.add(endpoint)
         found = extract_urls(normalized, final_url)
         # A dedicated preroll player contains advertising, not the channel.
         is_preroll = "preroll" in normalized.lower()
@@ -181,6 +187,15 @@ def inspect_player_resources(page_html, page_url):
                 walk_document(body, final_url, depth + 1)
 
     walk_document(page_html, page_url)
+    # Fetch the public player-service response without executing remote JavaScript.
+    for endpoint in sorted(player_endpoints):
+        if endpoint in seen:
+            continue
+        seen.add(endpoint)
+        body, final_url, content_type = get_text(endpoint, referer=page_url)
+        record_text("player-endpoint", endpoint, body, final_url, content_type)
+        if body:
+            candidates.update(extract_urls(body, final_url))
     candidates.difference_update(ad_candidates)
     return sorted(candidates), inspected, script_hits, sorted(ad_candidates)
 
