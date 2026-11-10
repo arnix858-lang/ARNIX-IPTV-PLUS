@@ -95,7 +95,8 @@ def extract_urls(text, base_url):
 
 def inspect_player_resources(page_html, page_url):
     """Inspect page, inline scripts, external scripts and nested player frames."""
-    candidates = set(extract_urls(page_html, page_url))
+    candidates = set()
+    ad_candidates = set()
     inspected = []
     seen = set()
     script_hits = []
@@ -109,7 +110,12 @@ def inspect_player_resources(page_html, page_url):
             return
         normalized = normalize_embedded_text(body)
         found = extract_urls(normalized, final_url)
-        candidates.update(found)
+        # A dedicated preroll player contains advertising, not the channel.
+        is_preroll = "preroll" in normalized.lower()
+        if is_preroll:
+            ad_candidates.update(found)
+        else:
+            candidates.update(found)
         # Keep short, useful context around player/network configuration tokens.
         if kind in ("script", "inline-script", "iframe", "embedded"):
             for match in re.finditer(
@@ -175,16 +181,17 @@ def inspect_player_resources(page_html, page_url):
                 walk_document(body, final_url, depth + 1)
 
     walk_document(page_html, page_url)
-    return sorted(candidates), inspected, script_hits
+    candidates.difference_update(ad_candidates)
+    return sorted(candidates), inspected, script_hits, sorted(ad_candidates)
 
 
 def scan_channel(item):
     page_url, name = item
     page_html, final_url, _ = get_text(page_url)
     if page_html is None:
-        return name, None, [], []
-    candidates, resources, script_hits = inspect_player_resources(page_html, final_url)
-    return name, candidates, resources, script_hits
+        return name, None, [], [], []
+    candidates, resources, script_hits, ad_candidates = inspect_player_resources(page_html, final_url)
+    return name, candidates, resources, script_hits, ad_candidates
 
 
 def load_previous():
@@ -246,15 +253,22 @@ def main():
                 futures = [pool.submit(scan_channel, item) for item in pages.items()]
                 for future in as_completed(futures):
                     try:
-                        name, candidates, resources, script_hits = future.result()
+                        name, candidates, resources, script_hits, ad_candidates = future.result()
                     except Exception as exc:
                         print("[WORKER ERROR]", exc)
                         continue
-                    debug[name] = {"candidate_streams": candidates or [], "resources": resources,
-                                   "player_code_hints": script_hits[:80]}
+                    debug[name] = {"candidate_streams": candidates or [], "ad_candidates": ad_candidates,
+                                   "resources": resources, "player_code_hints": script_hits[:80]}
                     if candidates is None:
                         continue
-                    # Keep existing entries if the page exposes no stream URL.
+                    # Remove previously published URLs identified in preroll blocks.
+                    if ad_candidates and name in updated:
+                        ad_set = set(ad_candidates)
+                        cleaned = [url for url in updated[name] if url not in ad_set]
+                        if cleaned != updated[name]:
+                            updated[name] = cleaned
+                            changed = True
+                    # Keep existing entries if no new non-ad stream is exposed.
                     if candidates and updated.get(name) != candidates:
                         updated[name] = candidates
                         changed = True
