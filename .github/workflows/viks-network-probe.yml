@@ -1,6 +1,11 @@
 name: Inspect Viks TV player network
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'viks_network_probe.py'
+      - '.github/workflows/viks-network-probe.yml'
   workflow_dispatch:
 
 permissions:
