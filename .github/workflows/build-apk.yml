@@ -34,12 +34,14 @@ jobs:
           chmod +x apktool
           sudo mv apktool /usr/local/bin/apktool
 
-      - name: Verify authorized input APK
+      - name: Download authorized APK from GitHub Release
         run: |
-          test -s app/original.apk || {
-            echo "::error::Upload the authorized original APK to app/original.apk first."
-            exit 1
-          }
+          mkdir -p app
+          curl -fL --retry 3 \
+            "https://github.com/arnix858-lang/ARNIX-IPTV-PLUS/releases/download/V1.1/halva-tv-player-plus-dev_2.8.98.apk" \
+            -o app/original.apk
+          test -s app/original.apk
+          file app/original.apk
 
       - name: Decode and rebrand
         run: |
