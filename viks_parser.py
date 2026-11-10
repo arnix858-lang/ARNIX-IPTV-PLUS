@@ -94,42 +94,88 @@ def extract_urls(text, base_url):
 
 
 def inspect_player_resources(page_html, page_url):
-    """Inspect bounded script and iframe resources referenced by a channel page."""
-    soup = BeautifulSoup(page_html, "html.parser")
-    resources = []
-    for tag in soup.select("script[src]")[:MAX_SCRIPTS]:
-        resources.append(("script", urljoin(page_url, tag.get("src", ""))))
-    for tag in soup.select("iframe[src]")[:MAX_IFRAMES]:
-        resources.append(("iframe", urljoin(page_url, tag.get("src", ""))))
-
+    """Inspect page, inline scripts, external scripts and nested player frames."""
     candidates = set(extract_urls(page_html, page_url))
     inspected = []
-    for kind, resource_url in resources:
-        if not is_http_url(resource_url):
-            continue
-        resource_text, final_url, content_type = get_text(resource_url, referer=page_url)
-        inspected.append({"type": kind, "url": resource_url, "final_url": final_url,
-                          "ok": resource_text is not None, "content_type": content_type})
-        if resource_text is None:
-            continue
-        candidates.update(extract_urls(resource_text, final_url))
-        # Player scripts sometimes contain an iframe URL rather than stream URL.
-        if kind == "script":
-            script_soup = BeautifulSoup(resource_text, "html.parser")
-            for match in re.findall(r"""(?:src|file|url|source)\s*[:=]\s*["']([^"']+)["']""",
-                                    resource_text, re.I):
-                embedded = urljoin(final_url, normalize_embedded_text(match))
-                if is_http_url(embedded) and not STREAM_SUFFIX_RE.search(embedded):
-                    # Inspect only explicit player iframe/embed URLs, not arbitrary links.
-                    if any(token in embedded.lower() for token in ("player", "embed", "video", "stream")):
-                        frame_text, frame_final, frame_type = get_text(embedded, referer=page_url)
-                        inspected.append({"type": "embedded", "url": embedded,
-                                          "final_url": frame_final, "ok": frame_text is not None,
-                                          "content_type": frame_type})
-                        if frame_text:
-                            candidates.update(extract_urls(frame_text, frame_final))
+    seen = set()
+    script_hits = []
+    max_depth = 2
+    max_total = MAX_SCRIPTS + MAX_IFRAMES + 8
 
-    return sorted(candidates), inspected
+    def record_text(kind, resource_url, body, final_url, content_type):
+        if body is None:
+            inspected.append({"type": kind, "url": resource_url, "final_url": final_url,
+                              "ok": False, "content_type": content_type})
+            return
+        normalized = normalize_embedded_text(body)
+        found = extract_urls(normalized, final_url)
+        candidates.update(found)
+        # Keep short, useful context around player/network configuration tokens.
+        if kind in ("script", "inline-script", "iframe", "embedded"):
+            for match in re.finditer(
+                r"(?i)(m3u8|mpd|hls|dash|manifest|playlist|stream|source|file|player|ajax|fetch\\s*\\(|XMLHttpRequest|videojs|jwplayer)",
+                normalized
+            ):
+                left, right = max(0, match.start()-180), min(len(normalized), match.end()+260)
+                excerpt = re.sub(r"\\s+", " ", normalized[left:right])[:460]
+                if excerpt and excerpt not in script_hits:
+                    script_hits.append(excerpt)
+                if len(script_hits) >= 80:
+                    break
+        inspected.append({"type": kind, "url": resource_url, "final_url": final_url,
+                          "ok": True, "content_type": content_type,
+                          "bytes": len(body.encode("utf-8", errors="ignore")),
+                          "stream_candidates": sorted(found)})
+
+    def walk_document(doc_html, doc_url, depth=0):
+        if depth > max_depth or len(seen) >= max_total:
+            return
+        soup = BeautifulSoup(doc_html, "html.parser")
+
+        # Inline scripts may hold player configuration even when no URL is in HTML.
+        for index, tag in enumerate(soup.select("script:not([src])")):
+            body = tag.string or tag.get_text(" ", strip=False)
+            if body:
+                record_text("inline-script", f"{doc_url}#inline-{index}", body, doc_url, "text/javascript")
+
+        resources = []
+        for tag in soup.select("script[src]")[:MAX_SCRIPTS]:
+            resources.append(("script", urljoin(doc_url, tag.get("src", ""))))
+        for tag in soup.select("iframe[src]")[:MAX_IFRAMES]:
+            resources.append(("iframe", urljoin(doc_url, tag.get("src", ""))))
+
+        for kind, resource_url in resources:
+            if not is_http_url(resource_url) or resource_url in seen or len(seen) >= max_total:
+                continue
+            seen.add(resource_url)
+            body, final_url, content_type = get_text(resource_url, referer=doc_url)
+            record_text(kind, resource_url, body, final_url, content_type)
+            if body is None:
+                continue
+
+            # A player script can construct URLs from fragments; preserve nearby
+            # config/network code for diagnosis instead of guessing a stream URL.
+            if kind == "script":
+                for match in re.findall(
+                    r"""(?i)(?:src|file|url|source|hls|manifest|playlist)\s*[:=]\s*["']([^"']+)["']""",
+                    body
+                ):
+                    embedded = urljoin(final_url, normalize_embedded_text(match))
+                    if (is_http_url(embedded) and embedded not in seen
+                            and any(token in embedded.lower() for token in
+                                    ("player", "embed", "video", "stream", "ajax"))):
+                        seen.add(embedded)
+                        embedded_body, embedded_final, embedded_type = get_text(embedded, referer=doc_url)
+                        record_text("embedded", embedded, embedded_body, embedded_final, embedded_type)
+                        if embedded_body and depth < max_depth:
+                            walk_document(embedded_body, embedded_final, depth + 1)
+
+            # Player frames often load their own JS and expose the actual source there.
+            if kind == "iframe" and depth < max_depth:
+                walk_document(body, final_url, depth + 1)
+
+    walk_document(page_html, page_url)
+    return sorted(candidates), inspected, script_hits
 
 
 def scan_channel(item):
@@ -138,7 +184,8 @@ def scan_channel(item):
     if page_html is None:
         return name, None, []
     candidates, resources = inspect_player_resources(page_html, final_url)
-    return name, candidates, resources
+    candidates, resources, script_hits = inspect_player_resources(page_html, final_url)
+    return name, candidates, resources, script_hits
 
 
 def load_previous():
@@ -200,11 +247,12 @@ def main():
                 futures = [pool.submit(scan_channel, item) for item in pages.items()]
                 for future in as_completed(futures):
                     try:
-                        name, candidates, resources = future.result()
+                        name, candidates, resources, script_hits = future.result()
                     except Exception as exc:
                         print("[WORKER ERROR]", exc)
                         continue
-                    debug[name] = {"candidate_streams": candidates or [], "resources": resources}
+                    debug[name] = {"candidate_streams": candidates or [], "resources": resources,
+                                   "player_code_hints": script_hits[:80]}
                     if candidates is None:
                         continue
                     # Keep existing entries if the page exposes no stream URL.
