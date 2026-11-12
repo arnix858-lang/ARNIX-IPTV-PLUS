@@ -2,8 +2,5 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
-playlist.m3u
-playlist.m3u.tmp
-channels.json
-channels.json.tmp
-debug.html
+proxies.txt
+.env
